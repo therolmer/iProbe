@@ -17,9 +17,12 @@ extern "C" {
 #define TYPE_DATA             0x02
 #define SUBTYPE_PROBE_REQUEST 0x04
 
-#define MAX_MAC_ADDR 50
+#define MAX_MAC_ADDR 250
+#define RSSI_MIN 6
+#define RSSI_MAX 7
 
-uint8_t macAddr[MAX_MAC_ADDR][6];
+#define RSSI_THRESHOLD 5
+uint8_t macAddr[MAX_MAC_ADDR][8];
 int NumberOfMacs = 0;
 
 char emptyStr[] = "                ";
@@ -66,6 +69,7 @@ static void printDataSpan(uint16_t start, uint16_t size, uint8_t* data);
 static void getMAC(char *addr, uint8_t* data, uint16_t offset);
 static void getsmallMAC(char *addr, uint8_t* data, uint16_t offset);
 static bool updateMacArray(uint8_t* data, uint16_t offset);
+static uint8_t calcActiveMacs();
 void channelHop();
 
 
@@ -85,7 +89,8 @@ static void showMetadata(SnifferPacket *snifferPacket) {
         return;
 
   Serial.println("updateMacArray");
-  if (updateMacArray(snifferPacket->data, 10))
+  uint8_t rssi = abs(snifferPacket->rx_ctrl.rssi);
+  if (updateMacArray(snifferPacket->data, 10, rssi))
   {
     char cstr[20];
     u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
@@ -106,7 +111,11 @@ static void showMetadata(SnifferPacket *snifferPacket) {
     sprintf(cstr, " Ch: %i", wifi_get_channel());
     u8x8.drawString(0, 2, cstr);
 
-    sprintf(cstr, " Devices: %i", NumberOfMacs);
+    sprintf(cstr, " Dev: %i", NumberOfMacs);
+    u8x8.drawString(0, 3, cstr);
+
+    uint8_t activeDevices = calcActiveMacs();
+    sprintf(cstr, " Dev: %i Act: %i", NumberOfMacs, activeDevices);
     u8x8.drawString(0, 3, cstr);
     
   //Serial.print(" Peer MAC: ");
@@ -118,6 +127,16 @@ static void showMetadata(SnifferPacket *snifferPacket) {
   //printDataSpan(26, SSID_length, snifferPacket->data);
 
   //Serial.println();
+  }
+  else
+  {
+        char cstr[20];
+        u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
+        u8x8.drawString(0, 3, emptyStr);
+        
+        uint8_t activeDevices = calcActiveMacs();
+        sprintf(cstr, " Dev: %i Act: %i", NumberOfMacs, activeDevices);
+        u8x8.drawString(0, 3, cstr);
   }
 }
 
@@ -143,10 +162,10 @@ static void getsmallMAC(char *addr, uint8_t* data, uint16_t offset) {
   sprintf(addr, "%02x:%02x:%02x", data[offset+3], data[offset+4], data[offset+5]);
 }
 
-static bool updateMacArray(uint8_t* data, uint16_t offset) 
+static bool updateMacArray(uint8_t* data, uint16_t offset, uint8_t rssi) 
 {
-  
-  Serial.println(NumberOfMacs);
+  Serial.print("rssi: ");
+  Serial.println(rssi);
 
   if (NumberOfMacs == 0)
   {
@@ -154,61 +173,84 @@ static bool updateMacArray(uint8_t* data, uint16_t offset)
     {
       macAddr[NumberOfMacs][j] = data[offset+j];
     }
-     
+
+    macAddr[NumberOfMacs][RSSI_MIN] = rssi;
+    macAddr[NumberOfMacs][RSSI_MAX] = rssi;
+    
     NumberOfMacs++;
     return true;
   }
 
+  // Is this Mac new or not
   bool newMacFound = true;
- 
+
   for (int i = 0; i < NumberOfMacs; i++)
   {
-
-    Serial.println("Mac compare");
+        
     bool macEqual = true;
     for (int j = 0; j < 6; j++)
-    { 
-      Serial.print(macAddr[i][j]);
-      Serial.print("=");
-      Serial.print(data[offset+j]);
-      Serial.print(",");
-      
+    {      
+      // Compare byte by byte
       if (macAddr[i][j] != data[offset+j])  
       {      
         macEqual = false;
         break;
       }
     }
-
-    Serial.println("Mac check eq");
-    
+        
     if (macEqual)
     {
-      Serial.println("Mac equal");
+      // Already have this mac
       newMacFound = false;
+
+      // Compare Rssi
+      if (macAddr[i][RSSI_MIN] > rssi)
+      {
+         macAddr[i][RSSI_MIN] = rssi;
+      }
+
+      if (macAddr[i][RSSI_MAX] < rssi)
+      {
+         macAddr[i][RSSI_MAX] = rssi;
+      }
+      
       break;
     }
   }
   
   if (newMacFound)
   {        
-    Serial.println("New mac");
-    char addr1[] = "00:00:00:00:00:00";
-    sprintf(addr1, "%02x:%02x:%02x:%02x:%02x:%02x", data[offset+0], data[offset+1], data[offset+2], data[offset+3], data[offset+4], data[offset+5]);
-    Serial.println(addr1);
-    
+    // Copy mac address to array   
     for (int j = 0; j<6; j++)
     {
       macAddr[NumberOfMacs][j] = data[offset+j];
-      Serial.print(macAddr[NumberOfMacs][j]);
-      
     }
 
-    Serial.println("added");
+    macAddr[NumberOfMacs][RSSI_MIN] = rssi;
+    macAddr[NumberOfMacs][RSSI_MAX] = rssi;
     NumberOfMacs++;
   }
 
   return newMacFound;
+}
+
+static uint8_t calcActiveMacs() 
+{
+  int activeMacs = 0;
+    
+  for (int i = 0; i < NumberOfMacs; i++)
+  {
+    Serial.print("Rssi min max ");
+    Serial.println(macAddr[i][RSSI_MIN]);
+    Serial.println(macAddr[i][RSSI_MAX]);
+    
+    if ((macAddr[i][RSSI_MAX] - macAddr[i][RSSI_MIN]) >  RSSI_THRESHOLD)
+    {
+      activeMacs++;    
+    }        
+  }
+
+  return activeMacs;
 }
 
 #define CHANNEL_HOP_INTERVAL_MS   1000
